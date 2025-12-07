@@ -181,7 +181,7 @@ def list_messages(service, query: str = "", max_results: int = 10, unread_only: 
         from_addr = msg["from"][:30].ljust(30)
         subject = msg["subject"][:50].ljust(50)
 
-        print(f"{unread_marker} {msg['id'][:12]}  {from_addr}  {subject}")
+        print(f"{unread_marker} {msg['id']}  {from_addr}  {subject}")
 
 
 def read_message(service, msg_id: str, output_json: bool = False):
