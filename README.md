@@ -1,18 +1,15 @@
 # gmail-read
 
-CLI tool to read Gmail messages from the command line.
+CLI tool to read and send Gmail messages from the command line.
 
 ## Installation
 
 ```bash
 # Install with uv
-uv tool install gmail-read
-
-# Or with pip
-pip install gmail-read
+uv tool install git+https://github.com/konradish/gmail-read.git
 
 # Or run directly without installing
-uvx gmail-read
+uvx --from git+https://github.com/konradish/gmail-read.git gmail-read
 ```
 
 ## Setup
@@ -28,8 +25,10 @@ First run will open browser for OAuth authorization.
 
 ## Usage
 
+### Reading Email
+
 ```bash
-# List recent messages
+# List recent messages (* = unread)
 gmail-read
 
 # List 20 messages
@@ -52,6 +51,25 @@ gmail-read --id <message_id> --json
 gmail-read --labels
 ```
 
+### Sending Email
+
+```bash
+# Send a simple email
+gmail-read send --to "someone@example.com" --subject "Hello" --body "Message body here"
+
+# Send with CC/BCC
+gmail-read send --to "a@b.com" --cc "c@d.com" --bcc "e@f.com" -s "Subject" -b "Body"
+
+# Read body from stdin (great for piping from Claude)
+echo "Email body" | gmail-read send --to "a@b.com" --subject "Hi" --body-stdin
+
+# Reply to a message (auto-threads, auto-fills To and Subject)
+gmail-read send --reply-to <message_id> --body "Thanks for your email!"
+
+# Dry run - see what would be sent without sending
+gmail-read send --to "a@b.com" -s "Test" -b "Body" --dry-run
+```
+
 ## Automation Examples
 
 ```bash
@@ -60,6 +78,15 @@ gmail-read --unread -n 5 | claude -p "Summarize my unread emails"
 
 # Check for urgent messages
 gmail-read --query "is:unread subject:urgent" --json | jq '.subject'
+
+# AI-composed email
+claude -p "Draft a polite follow-up email to Bob about the project deadline" | \
+  gmail-read send --to "bob@example.com" --subject "Project follow-up" --body-stdin
+
+# Reply with AI assistance
+gmail-read --id <msg_id> --json | \
+  claude -p "Draft a helpful reply to this email" | \
+  gmail-read send --reply-to <msg_id> --body-stdin --dry-run
 ```
 
 ## Config
@@ -67,6 +94,12 @@ gmail-read --query "is:unread subject:urgent" --json | jq '.subject'
 Credentials stored in `~/.gmail-read/`:
 - `credentials.json` - OAuth client credentials (you provide)
 - `token.json` - Access token (auto-generated)
+
+## Scopes
+
+This tool requests the following Gmail API scopes:
+- `gmail.readonly` - Read email messages
+- `gmail.send` - Send email messages
 
 ## License
 

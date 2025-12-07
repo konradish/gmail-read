@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gmail-read: CLI tool to read Gmail messages.
+gmail-read: CLI tool to read and send Gmail messages.
 
 Usage:
     gmail-read                     # List recent messages
@@ -9,6 +9,10 @@ Usage:
     gmail-read --query "from:boss" # Search query
     gmail-read --id <message_id>   # Read specific message
     gmail-read --labels            # List available labels
+
+    gmail-read send --to "a@b.com" --subject "Hi" --body "Hello"
+    gmail-read send --to "a@b.com" --subject "Hi" --body-stdin < msg.txt
+    gmail-read send --reply-to <msg_id> --body "Thanks!"
 """
 
 import argparse
@@ -16,6 +20,7 @@ import base64
 import json
 import os
 import sys
+from email.mime.text import MIMEText
 from datetime import datetime
 from pathlib import Path
 
@@ -24,8 +29,11 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-# Gmail API scopes
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+# Gmail API scopes - need both read and send
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
 
 # Config paths
 CONFIG_DIR = Path.home() / ".gmail-read"
@@ -40,10 +48,23 @@ def get_credentials() -> Credentials:
     if TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
 
+        # Check if we have all required scopes
+        if creds and creds.scopes:
+            missing_scopes = set(SCOPES) - set(creds.scopes)
+            if missing_scopes:
+                print(f"New scopes required: {missing_scopes}", file=sys.stderr)
+                print("Re-authenticating...", file=sys.stderr)
+                creds = None
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                # Refresh failed, need to re-auth
+                creds = None
+
+        if not creds:
             if not CREDENTIALS_FILE.exists():
                 print(f"Error: No credentials file found at {CREDENTIALS_FILE}", file=sys.stderr)
                 print("\nSetup instructions:", file=sys.stderr)
@@ -84,7 +105,7 @@ def get_message_snippet(service, msg_id: str) -> dict:
     """Get message metadata and snippet."""
     msg = service.users().messages().get(
         userId="me", id=msg_id, format="metadata",
-        metadataHeaders=["From", "To", "Subject", "Date"]
+        metadataHeaders=["From", "To", "Subject", "Date", "Message-ID"]
     ).execute()
 
     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
@@ -95,8 +116,10 @@ def get_message_snippet(service, msg_id: str) -> dict:
         "to": headers.get("To", ""),
         "subject": headers.get("Subject", "(no subject)"),
         "date": headers.get("Date", ""),
+        "message_id": headers.get("Message-ID", ""),
         "snippet": msg.get("snippet", ""),
         "labels": msg.get("labelIds", []),
+        "threadId": msg.get("threadId", ""),
     }
 
 
@@ -128,8 +151,10 @@ def get_message_full(service, msg_id: str) -> dict:
         "to": headers.get("To", ""),
         "subject": headers.get("Subject", "(no subject)"),
         "date": headers.get("Date", ""),
+        "message_id": headers.get("Message-ID", ""),
         "body": body,
         "labels": msg.get("labelIds", []),
+        "threadId": msg.get("threadId", ""),
     }
 
 
@@ -175,13 +200,113 @@ def read_message(service, msg_id: str, output_json: bool = False):
         print(msg["body"])
 
 
+def send_message(service, to: str, subject: str, body: str,
+                 reply_to_id: str = None, cc: str = None, bcc: str = None,
+                 dry_run: bool = False):
+    """Send an email message."""
+    message = MIMEText(body)
+    message["to"] = to
+    message["subject"] = subject
+
+    if cc:
+        message["cc"] = cc
+    if bcc:
+        message["bcc"] = bcc
+
+    thread_id = None
+
+    # If replying, get original message headers
+    if reply_to_id:
+        original = get_message_full(service, reply_to_id)
+
+        # Set References and In-Reply-To headers for proper threading
+        if original.get("message_id"):
+            message["In-Reply-To"] = original["message_id"]
+            message["References"] = original["message_id"]
+
+        # Use original thread
+        thread_id = original.get("threadId")
+
+        # Add Re: prefix if not already there
+        if not subject.lower().startswith("re:"):
+            message.replace_header("subject", f"Re: {original['subject']}")
+
+    # Encode the message
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+    body_dict = {"raw": raw}
+    if thread_id:
+        body_dict["threadId"] = thread_id
+
+    if dry_run:
+        print("=== DRY RUN - Would send: ===")
+        print(f"To:      {to}")
+        if cc:
+            print(f"Cc:      {cc}")
+        if bcc:
+            print(f"Bcc:     {bcc}")
+        print(f"Subject: {message['subject']}")
+        print("-" * 40)
+        print(body)
+        print("-" * 40)
+        print("(Use without --dry-run to actually send)")
+        return None
+
+    result = service.users().messages().send(userId="me", body=body_dict).execute()
+
+    print(f"Message sent successfully!")
+    print(f"Message ID: {result['id']}")
+    if thread_id:
+        print(f"Thread ID: {result['threadId']} (replied to thread)")
+
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Read Gmail from the command line",
+        description="Read and send Gmail from the command line",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
 
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+
+    # Send subcommand
+    send_parser = subparsers.add_parser("send", help="Send an email")
+    send_parser.add_argument(
+        "--to", type=str, required=False,
+        help="Recipient email address"
+    )
+    send_parser.add_argument(
+        "--cc", type=str,
+        help="CC recipients (comma-separated)"
+    )
+    send_parser.add_argument(
+        "--bcc", type=str,
+        help="BCC recipients (comma-separated)"
+    )
+    send_parser.add_argument(
+        "--subject", "-s", type=str, default="",
+        help="Email subject"
+    )
+    send_parser.add_argument(
+        "--body", "-b", type=str,
+        help="Email body text"
+    )
+    send_parser.add_argument(
+        "--body-stdin", action="store_true",
+        help="Read email body from stdin"
+    )
+    send_parser.add_argument(
+        "--reply-to", type=str,
+        help="Message ID to reply to (threads the response)"
+    )
+    send_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be sent without actually sending"
+    )
+
+    # Main parser arguments (for read operations)
     parser.add_argument(
         "-n", "--count", type=int, default=10,
         help="Number of messages to list (default: 10)"
@@ -212,7 +337,51 @@ def main():
     try:
         service = get_service()
 
-        if args.labels:
+        if args.command == "send":
+            # Handle send command
+            body = args.body
+
+            if args.body_stdin:
+                body = sys.stdin.read()
+
+            if not body:
+                print("Error: Must provide --body or --body-stdin", file=sys.stderr)
+                sys.exit(1)
+
+            # For replies, --to is optional (replies to sender)
+            to = args.to
+            if args.reply_to and not to:
+                original = get_message_snippet(service, args.reply_to)
+                # Extract email from "Name <email>" format
+                from_addr = original["from"]
+                if "<" in from_addr:
+                    to = from_addr.split("<")[1].rstrip(">")
+                else:
+                    to = from_addr
+                print(f"Replying to: {to}")
+
+            if not to:
+                print("Error: Must provide --to or --reply-to", file=sys.stderr)
+                sys.exit(1)
+
+            subject = args.subject
+            if args.reply_to and not subject:
+                original = get_message_snippet(service, args.reply_to)
+                subject = original["subject"]
+                if not subject.lower().startswith("re:"):
+                    subject = f"Re: {subject}"
+
+            send_message(
+                service,
+                to=to,
+                subject=subject,
+                body=body,
+                reply_to_id=args.reply_to,
+                cc=args.cc,
+                bcc=args.bcc,
+                dry_run=args.dry_run
+            )
+        elif args.labels:
             list_labels(service)
         elif args.id:
             read_message(service, args.id, output_json=args.json)
