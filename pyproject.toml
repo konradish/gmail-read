@@ -1,0 +1,38 @@
+[project]
+name = "gmail-read"
+version = "0.1.0"
+description = "CLI tool to read Gmail messages"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Konrad Odell", email = "konradish@gmail.com"}
+]
+keywords = ["gmail", "cli", "email"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "google-api-python-client>=2.0.0",
+    "google-auth-httplib2>=0.1.0",
+    "google-auth-oauthlib>=1.0.0",
+]
+
+[project.scripts]
+gmail-read = "gmail_read:main"
+
+[project.urls]
+Homepage = "https://github.com/konradish/gmail-read"
+Repository = "https://github.com/konradish/gmail-read"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
